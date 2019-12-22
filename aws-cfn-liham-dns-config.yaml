@@ -1,0 +1,209 @@
+# Copyright 2019 Melvin Perello <melvinperello@gmail.com>
+# License: MIT Open Source License <https://opensource.org/licenses/MIT>
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Liham SES DNS Configuration.
+Metadata:
+    AWS::CloudFormation::Interface:
+        ParameterGroups:
+            -
+                Label:
+                    default: "DNS Settings"
+                Parameters:
+                    - PHostedZone
+                    - PDomainName
+                    - PSESMailRxRecord
+                    - PDnsTTL
+                    - PCreateRuleSet
+            -
+                Label:
+                    default: "Domain Verification"
+                Parameters:
+                    - PSESVerifyKey
+                    - PSESVerifyVal
+            -
+                Label:
+                    default: "DKIM Signing"
+                Parameters:
+                    - PSESDKIMKey01
+                    - PSESDKIMKeyValue01
+                    - PSESDKIMKey02
+                    - PSESDKIMKeyValue02
+                    - PSESDKIMKey03
+                    - PSESDKIMKeyValue03
+        ParameterLabels:
+            PHostedZone:
+                default: "Hosted Zone ID"
+            PDomainName:
+                default: "Domain Name"
+            PSESMailRxRecord:
+                default: "SES Receiving Endpoint"
+            PDnsTTL:
+                default: "DNS Record TTL"
+            PCreateRuleSet:
+                default: "Create Rule Set"
+
+            PSESVerifyKey:
+                default: "Domain Verification Record Name"
+            PSESVerifyVal:
+                default: "Domain Verification Record Value"
+
+            PSESDKIMKey01:
+                default: "DKIM Record Name #01"
+            PSESDKIMKeyValue01:
+                default: "DKIM Record Value #01"
+            PSESDKIMKey02:
+                default: "DKIM Record Name #02"
+            PSESDKIMKeyValue02:
+                default: "DKIM Record Value #02"
+            PSESDKIMKey03:
+                default: "DKIM Record Name #03"
+            PSESDKIMKeyValue03:
+                default: "DKIM Record Value #03"
+
+Parameters:
+    #---------------------------------------------------------------------------
+    # Settings.
+    #---------------------------------------------------------------------------
+    PHostedZone:
+        Type: AWS::Route53::HostedZone::Id
+        Description: "Hosted Zone ID of the domain."
+    PDomainName:
+        Type: String
+        Description: "Domain Name."
+    # https://docs.aws.amazon.com/ses/latest/DeveloperGuide/regions.html#region-endpoints
+    PSESMailRxRecord:
+        Type: String
+        Description: "SES Receiving Endpoint."
+        Default: "10 inbound-smtp.eu-west-1.amazonaws.com"
+    PDnsTTL:
+        Type: String
+        Description: "Time to live of DNS Records."
+        Default: "1800"
+    PCreateRuleSet:
+        Type: String
+        Description: "Create a rule set from this template. Select SKIP if you already have one."
+        Default: "create"
+        AllowedValues:
+            - "create"
+            - "skip"
+
+    #---------------------------------------------------------------------------
+    # Verify Domain Ownership.
+    #---------------------------------------------------------------------------
+    PSESVerifyKey:
+        Type: String
+        Description: "SES Verification Key"
+
+    PSESVerifyVal:
+        Type: String
+        Description: "SES Verification Key Value"
+    #---------------------------------------------------------------------------
+    # Enable DKIM Signing.
+    #---------------------------------------------------------------------------
+    PSESDKIMKey01:
+        Type: String
+        Description: "SES DKIM Key 01"
+    PSESDKIMKeyValue01:
+        Type: String
+        Description: "SES DKIM Key Value 01"
+
+    PSESDKIMKey02:
+        Type: String
+        Description: "SES DKIM Key 02"
+    PSESDKIMKeyValue02:
+        Type: String
+        Description: "SES DKIM Key Value 02"
+
+    PSESDKIMKey03:
+        Type: String
+        Description: "SES DKIM Key 03"
+    PSESDKIMKeyValue03:
+        Type: String
+        Description: "SES DKIM Key Value 03"
+
+
+Conditions:
+    CCreateRuleSet: !Equals [ !Ref PCreateRuleSet, "create" ]
+
+Resources:
+    #---------------------------------------------------------------------------
+    # MX Record
+    #---------------------------------------------------------------------------
+    RSMX01:
+        Type: AWS::Route53::RecordSet
+        Properties:
+            HostedZoneId : !Ref PHostedZone
+            Name: !Sub "${PDomainName}."
+            ResourceRecords:
+              - !Ref PSESMailRxRecord
+            TTL: !Ref PDnsTTL
+            Type: MX
+
+    RSVerifyDomain01:
+        Type: AWS::Route53::RecordSet
+        Properties:
+            HostedZoneId : !Ref PHostedZone
+            Name: !Sub "${PSESVerifyKey}."
+            ResourceRecords:
+              - !Ref PSESVerifyVal
+            TTL: !Ref PDnsTTL
+            Type: TXT
+    #---------------------------------------------------------------------------
+    # DKIM
+    #---------------------------------------------------------------------------
+    RSDKIM01Key1:
+        Type: AWS::Route53::RecordSet
+        Properties:
+            HostedZoneId : !Ref PHostedZone
+            Name: !Sub "${PSESDKIMKey01}."
+            ResourceRecords:
+              - !Ref PSESDKIMKeyValue01
+            TTL: !Ref PDnsTTL
+            Type: CNAME
+
+    RSDKIM01Key2:
+        Type: AWS::Route53::RecordSet
+        Properties:
+            HostedZoneId : !Ref PHostedZone
+            Name: !Sub "${PSESDKIMKey02}."
+            ResourceRecords:
+              - !Ref PSESDKIMKeyValue02
+            TTL: !Ref PDnsTTL
+            Type: CNAME
+
+    RSDKIM01Key3:
+        Type: AWS::Route53::RecordSet
+        Properties:
+            HostedZoneId : !Ref PHostedZone
+            Name: !Sub "${PSESDKIMKey03}."
+            ResourceRecords:
+              - !Ref PSESDKIMKeyValue03
+            TTL: !Ref PDnsTTL
+            Type: CNAME
+
+    # --------------------------------
+    # E-Mail Rules
+    # --------------------------------
+    RegionRuleSet:
+        Type: AWS::SES::ReceiptRuleSet
+        Condition: CCreateRuleSet
+        Properties:
+          RuleSetName: !Sub "liham-managed-rs-${AWS::Region}"
+
+Outputs:
+    CCreateRuleSetValue:
+        Value:
+          !If
+          - CCreateRuleSet
+          - "Rule Set was created."
+          - "Rule Set was skipped."
+    LihamRuleSetName:
+        Condition: CCreateRuleSet
+        Description: Liham Managed Rule Set for the Region.
+        Value: !Ref RegionRuleSet
+        Export:
+            Name: LihamSESRuleSet

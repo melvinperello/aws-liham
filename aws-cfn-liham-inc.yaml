@@ -1,0 +1,534 @@
+# Copyright 2019 Melvin Perello <melvinperello@gmail.com>
+# License: MIT Open Source License <https://opensource.org/licenses/MIT>
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+# The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Liham Incoming Stack.
+Metadata:
+    AWS::CloudFormation::Interface:
+        ParameterGroups:
+            -
+                Label:
+                    default: "Application Settings"
+                Parameters:
+                    - PBucketId
+                    - PFunDomain
+                    - PLihamIncFunCodeBucket
+                    - PLihamIncFunCodeKey
+                    - PFunCleanup
+            -
+                Label:
+                    default: "Cost Allocation Tags"
+                Parameters:
+                    - PAppName
+                    - PClient
+                    - POwner
+                    - PEnvironment
+        ParameterLabels:
+            PBucketId:
+                default: "Adds a suffix to the generated bucket name to add uniqueness"
+            PLihamIncFunCodeBucket:
+                default: "Liham Incoming Function Bucket Name"
+            PLihamIncFunCodeKey:
+                default: "Liham Incoming Function Bucket Key"
+            PFunDomain:
+                default: "Domain Scope"
+            PFunCleanup:
+                default: "Function Cleanup"
+
+
+            PAppName:
+                default: "Application Name"
+            PClient:
+                default: "Client Name"
+            POwner:
+                default: "Application Manager"
+            PEnvironment:
+                default: "Environment Placement"
+
+Parameters:
+    # --------------------------------------------------------------------------
+    # Application Parameters
+    # --------------------------------------------------------------------------
+    PLihamIncFunCodeBucket:
+        Type: String
+        Description: "Code Bucket Name."
+        # non-blank value
+        AllowedPattern: ".+"
+    PLihamIncFunCodeKey:
+        Type: String
+        Description: "Code Bucket Key."
+        # non-blank value
+        AllowedPattern: ".+"
+    PFunDomain:
+        Type: String
+        Description: "Function Domain Scope."
+    PFunCleanup:
+        Type: String
+        Description: "Function Resource Cleanup."
+        AllowedPattern: ".+"
+        Default: "ALL"
+        AllowedValues:
+            - "NONE"
+            - "ALL"
+            - "REMOTE"
+            - "LOCAL"
+    PBucketId:
+        Type: String
+        Description: "Unique Bucket ID."
+        AllowedPattern: ".+"
+        Default: "zxcv"
+    # --------------------------------------------------------------------------
+    # Tagging Parameters
+    # --------------------------------------------------------------------------
+    PEnvironment:
+        Type: String
+        Default: "dv"
+        AllowedValues:
+            - "dv"
+            - "pr"
+        Description: "Environment placement."
+    PClient:
+        Type: String
+        Description: "Client category for billing."
+        Default: "melvinperello"
+    PAppName:
+        Type: String
+        Description: "Application Name"
+        Default: "liham"
+        AllowedValues:
+            - "liham"
+    POwner:
+        Type: String
+        Description: "Application owner for details."
+        Default: "melvinperello"
+
+Conditions:
+    DevEnvironment: !Equals [ !Ref PEnvironment, dv ]
+    ProductionEnvironment: !Equals [ !Ref PEnvironment, pr ]
+
+Resources:
+    # ----------------------------------------------------------------
+    # PROCESS
+    # ----------------------------------------------------------------
+    # --------------------------------
+    # DLQ
+    # --------------------------------
+    LihamDlq:
+        Type: AWS::SQS::Queue
+        Properties:
+            DelaySeconds: 60 # 1 min
+            KmsDataKeyReusePeriodSeconds: 300 # mins
+            KmsMasterKeyId: "alias/aws/sqs"
+            MaximumMessageSize: 262144 # 256 KiB
+            MessageRetentionPeriod: 1209600 # 14 days
+            QueueName: !Sub
+                            - "liham-dlq-${domain}-${PEnvironment}"
+                            - {"domain": !Join [ "-" , !Split ["." , !Ref PFunDomain] ] }
+            ReceiveMessageWaitTimeSeconds: 20 # long polling
+            Tags:
+                -
+                    Key: "account"
+                    Value: !Ref AWS::AccountId
+                -
+                    Key: "region"
+                    Value: !Ref AWS::Region
+                -
+                    Key: "application"
+                    Value: !Ref PAppName
+                -
+                    Key: "service"
+                    Value: "receiving/sending"
+                -
+                    Key: "client"
+                    Value: !Ref PClient
+                -
+                    Key: "owner"
+                    Value: !Ref POwner
+                -
+                    Key: "env"
+                    Value: !Ref PEnvironment
+            VisibilityTimeout: 30 # 30 seconds
+
+    # --------------------------------
+    # Role
+    # --------------------------------
+    LihamIncFunRole:
+        DependsOn:
+            - LihamDlq
+        Type: "AWS::IAM::Role"
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    -
+                        Effect: "Allow"
+                        Principal:
+                            Service:
+                                - "lambda.amazonaws.com"
+                        Action:
+                            - "sts:AssumeRole"
+            Path: "/"
+            Policies:
+            -
+                PolicyName: "inline"
+                PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                        -
+                            Effect: "Allow"
+                            Action:
+                                - "logs:CreateLogGroup"
+                            Resource:
+                                - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                        -
+                            Effect: "Allow"
+                            Action:
+                                - "logs:CreateLogStream"
+                                - "logs:PutLogEvents"
+                            Resource:
+                                - !Sub
+                                    - "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${funName}:*"
+                                    -
+                                        funName: !Sub
+                                                        - "liham-inc-fun-${domain}-${PEnvironment}"
+                                                        -
+                                                            domain: !Join [ "-" , !Split ["." , !Ref PFunDomain] ]
+                        -
+                            Effect: "Allow"
+                            Action:
+                                - "s3:GetObject"
+                                - "s3:DeleteObject"
+                            Resource:
+                                - !Sub
+                                    - "arn:aws:s3:::${bucketName}/inbox/*"
+                                    - {"bucketName": !Sub "liham-store-${PFunDomain}-${PEnvironment}-${PBucketId}"}
+                        -
+                            Effect: "Allow"
+                            Action:
+                                - "s3:PutObject"
+                            Resource:
+                                - !Sub
+                                    - "arn:aws:s3:::${bucketName}/store/*"
+                                    - {"bucketName": !Sub "liham-store-${PFunDomain}-${PEnvironment}-${PBucketId}"}
+                        -
+                            Effect: "Allow"
+                            Action:
+                                - "sqs:SendMessage"
+                            Resource:
+                                - !GetAtt LihamDlq.Arn
+
+                        # Enable X-Ray
+                        # -
+                        #     Effect: "Allow"
+                        #     Action:
+                        #         - "xray:PutTraceSegments"
+                        #         - "xray:PutTelemetryRecords"
+                        #     Resource:
+                        #         - "*"
+            RoleName: !Sub "liham-inc-fun-role-${PFunDomain}-${PEnvironment}-${AWS::Region}"
+            Tags:
+                -
+                    Key: "account"
+                    Value: !Ref AWS::AccountId
+                -
+                    Key: "region"
+                    Value: !Ref AWS::Region
+                -
+                    Key: "application"
+                    Value: !Ref PAppName
+                -
+                    Key: "service"
+                    Value: "receiving"
+                -
+                    Key: "client"
+                    Value: !Ref PClient
+                -
+                    Key: "owner"
+                    Value: !Ref POwner
+                -
+                    Key: "env"
+                    Value: !Ref PEnvironment
+    # --------------------------------
+    # Function
+    # --------------------------------
+    LihamIncFun:
+        DependsOn:
+            - LihamIncFunRole
+            - LihamDlq
+        Type: AWS::Lambda::Function
+        Properties:
+            Code:
+                S3Bucket: !Ref PLihamIncFunCodeBucket
+                S3Key: !Ref PLihamIncFunCodeKey
+            Environment:
+                Variables:
+                    FUN_ENV: !Ref PEnvironment
+                    FUN_BUCKET: !Sub "liham-store-${PFunDomain}-${PEnvironment}-${PBucketId}"
+                    FUN_CLEANUP: !Ref PFunCleanup
+                    FUN_DOMAIN: !Ref PFunDomain
+            Description: Liham Incoming Function
+            FunctionName: !Sub
+                            - "liham-inc-fun-${domain}-${PEnvironment}"
+                            - {"domain": !Join [ "-" , !Split ["." , !Ref PFunDomain] ] }
+            Handler: fun-raw-mail-transport.lambda_handler
+            MemorySize: 128
+            ReservedConcurrentExecutions: 100
+            Role: !GetAtt LihamIncFunRole.Arn
+            Runtime: python3.7
+            Tags:
+                -
+                    Key: "account"
+                    Value: !Ref AWS::AccountId
+                -
+                    Key: "region"
+                    Value: !Ref AWS::Region
+                -
+                    Key: "application"
+                    Value: !Ref PAppName
+                -
+                    Key: "service"
+                    Value: "receiving"
+                -
+                    Key: "client"
+                    Value: !Ref PClient
+                -
+                    Key: "owner"
+                    Value: !Ref POwner
+                -
+                    Key: "env"
+                    Value: !Ref PEnvironment
+            Timeout: 15
+            DeadLetterConfig:
+                TargetArn: !GetAtt LihamDlq.Arn
+            # TracingConfig:
+            #     Mode: Active
+
+    # ----------------------------------------------------------------
+    # STORAGE
+    #   - This requires that all resources above are already created.
+    #   - This assumes that all reference above was derived.
+    # ----------------------------------------------------------------
+    # --------------------------------
+    # Allow S3 to Invoke Lambda
+    # --------------------------------
+    LihamStoreCallIncFun:
+        DependsOn:
+            - LihamIncFun
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !GetAtt LihamIncFun.Arn
+            Action: 'lambda:InvokeFunction'
+            Principal: s3.amazonaws.com
+            SourceAccount: !Ref AWS::AccountId
+            SourceArn: !Sub
+                            - "arn:aws:s3:::${bucketName}"
+                            - {"bucketName": !Sub "liham-store-${PFunDomain}-${PEnvironment}-${PBucketId}"}
+    # --------------------------------
+    # Create S3 Bucket
+    # --------------------------------
+    LihamStore:
+        DependsOn:
+            - LihamStoreCallIncFun
+            - LihamIncFun
+        Type: AWS::S3::Bucket
+        DeletionPolicy: Delete
+        Properties:
+            BucketEncryption:
+                ServerSideEncryptionConfiguration:
+                    - ServerSideEncryptionByDefault:
+                        SSEAlgorithm: AES256
+            BucketName: !Sub "liham-store-${PFunDomain}-${PEnvironment}-${PBucketId}"
+            # ------------------------------------------------------------------
+            # When you encounter: Unable to validate the following destination configurations.
+            # it means that the resources that will recieve the S3 notifications must be created first.
+            # this S3 sends notification to a lambda function that's why there is a depends on settngs above.
+            # https://aws.amazon.com/premiumsupport/knowledge-center/unable-validate-destination-s3/
+            NotificationConfiguration:
+                LambdaConfigurations:
+                -
+                    Event: "s3:ObjectCreated:Put"
+                    Filter:
+                        S3Key:
+                            Rules:
+                                - Name: "prefix"
+                                  Value: "inbox/"
+                    Function: !GetAtt LihamIncFun.Arn
+            # ------------------------------------------------------------------
+            Tags:
+                -
+                    Key: "account"
+                    Value: !Ref AWS::AccountId
+                -
+                    Key: "region"
+                    Value: !Ref AWS::Region
+                -
+                    Key: "application"
+                    Value: !Ref PAppName
+                -
+                    Key: "service"
+                    Value: "receiving/sending"
+                -
+                    Key: "client"
+                    Value: !Ref PClient
+                -
+                    Key: "owner"
+                    Value: !Ref POwner
+                -
+                    Key: "env"
+                    Value: !Ref PEnvironment
+    # --------------------------------
+    # Create S3 Bucket Policy
+    # --------------------------------
+    LihamStorePolicy:
+        Type: AWS::S3::BucketPolicy
+        DependsOn:
+            - LihamStore
+        Properties:
+            Bucket: !Ref LihamStore
+            PolicyDocument:
+                Statement:
+                    # allow ses to put email objects on inbox folder
+                    -
+                        Action:
+                            - "s3:PutObject"
+                        Effect: "Allow"
+                        Resource:
+                            - !Sub "${LihamStore.Arn}/inbox/*"
+                        Principal:
+                            Service: "ses.amazonaws.com"
+                        Condition:
+                            StringEquals:
+                                aws:Referer: !Ref AWS::AccountId
+                    # encrypt other folders
+                    -
+                        Action:
+                            - "s3:PutObject"
+                        Effect: "Deny"
+                        Resource:
+                            - !Sub "${LihamStore.Arn}/store/*"
+                        Principal: "*"
+                        Condition:
+                            StringNotEquals:
+                                s3:x-amz-server-side-encryption: "AES256"
+                    -
+                        Action:
+                            - "s3:PutObject"
+                        Effect: "Deny"
+                        Resource:
+                            - !Sub "${LihamStore.Arn}/store/*"
+                        Principal: "*"
+                        Condition:
+                            'Null':
+                                s3:x-amz-server-side-encryption: true
+    # --------------------------------
+    # Receipt Rules
+    # --------------------------------
+    LihamRuleDefault:
+        Condition: ProductionEnvironment
+        Type: AWS::SES::ReceiptRule
+        DependsOn:
+            - LihamStorePolicy
+        Properties:
+            RuleSetName: !ImportValue LihamSESRuleSet
+            Rule:
+                Actions:
+                    -   S3Action:
+                            BucketName: !Ref LihamStore
+                            ObjectKeyPrefix: !Sub "inbox/"
+                Enabled: true
+                Name: !Sub "rr.${PFunDomain}.pr.0"
+                Recipients:
+                    # https://www.ietf.org/rfc/rfc2142.txt
+                    # -- Business Related
+                    # Marketing
+                    - !Sub "info@${PFunDomain}"
+                    - !Sub "marketing@${PFunDomain}"
+                    # Sales
+                    - !Sub "sales@${PFunDomain}"
+
+                    # Customer Service
+                    - !Sub "support@${PFunDomain}"
+
+                    # -- Network Operations
+                    # Customer Relations
+                    - !Sub "abuse@${PFunDomain}"
+                    # Network Operations
+                    - !Sub "noc@${PFunDomain}"
+                    # Network Security
+                    - !Sub "security@${PFunDomain}"
+
+                    # -- SUPPORT MAILBOX NAMES FOR SPECIFIC INTERNET SERVICES
+                    # SMTP
+                    - !Sub "postmaster@${PFunDomain}"
+                    # DNS
+                    - !Sub "hostmaster@${PFunDomain}"
+                    # NNTP
+                    - !Sub "usenet@${PFunDomain}"
+                    - !Sub "news@${PFunDomain}"
+                    # HTTP
+                    - !Sub "webmaster@${PFunDomain}"
+                    - !Sub "www@${PFunDomain}"
+                    # UUCP
+                    - !Sub "uucp@${PFunDomain}"
+                    # FTP
+                    - !Sub "ftp@${PFunDomain}"
+
+                    # -- Admin
+                    - !Sub "admin@${PFunDomain}"
+                    - !Sub "administrator@${PFunDomain}"
+                ScanEnabled: true
+                TlsPolicy: "Optional" # or "Require"
+
+    LihamRuleUsers:
+        Condition: ProductionEnvironment
+        Type: AWS::SES::ReceiptRule
+        DependsOn:
+            - LihamStorePolicy
+        Properties:
+            After: !Ref LihamRuleDefault
+            RuleSetName: !ImportValue LihamSESRuleSet
+            Rule:
+                Actions:
+                    -   S3Action:
+                            BucketName: !Ref LihamStore
+                            ObjectKeyPrefix: !Sub "inbox/"
+                Enabled: true
+                Name: !Sub "rr.${PFunDomain}.pr.1"
+                Recipients:
+                    # -- Users
+                    - !Sub "melvinperello@${PFunDomain}"
+
+                ScanEnabled: true
+                TlsPolicy: "Optional" # or "Require"
+
+    LihamRuleUsersDev:
+        Condition: DevEnvironment
+        Type: AWS::SES::ReceiptRule
+        DependsOn:
+            - LihamStorePolicy
+        Properties:
+            RuleSetName: !ImportValue LihamSESRuleSet
+            Rule:
+                Actions:
+                    -   S3Action:
+                            BucketName: !Ref LihamStore
+                            ObjectKeyPrefix: !Sub "inbox/"
+                Enabled: true
+                Name: !Sub "rr.${PFunDomain}.dv.1"
+                Recipients:
+                    # -- Users
+                    - !Sub "dev01@${PFunDomain}"
+                    - !Sub "dev02@${PFunDomain}"
+                    - !Sub "dev03@${PFunDomain}"
+
+                ScanEnabled: true
+                TlsPolicy: "Optional" # or "Require"
+Outputs:
+    LihamStoreS3Bucket:
+        Description: Liham Store S3 Bucket.
+        Value: !GetAtt LihamStore.Arn
+        Export:
+            Name: !Sub "LihamStoreBucket${PEnvironment}"
