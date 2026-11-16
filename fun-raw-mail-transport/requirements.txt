@@ -1,1 +1,1 @@
-mail-parser==3.9.3
+mail-parser==4.6.3
